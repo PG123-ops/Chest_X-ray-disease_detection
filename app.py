@@ -1,50 +1,111 @@
 import streamlit as st
 import torch
-from ultralytics import YOLO
-from PIL import Image
 import numpy as np
-from model import Classifier
+from PIL import Image
+from torchvision import transforms
+from model import ChestXrayClassifier
+from ultralytics import YOLO
 
-st.set_page_config(page_title="Multi-Model AI App")
+# -----------------------------------
+# CONFIG
+# -----------------------------------
+st.set_page_config(page_title="Chest X-ray AI", layout="centered")
 
-st.title("Classification + Detection App")
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Sidebar selection
-task = st.sidebar.radio(
-    "Choose Task",
-    ["Image Classification", "Object Detection"]
-)
+NUM_CLASSES = 14               # CHANGE if needed
+BACKBONE = "efficientnet"      # MUST MATCH TRAINING
+CLASS_NAMES = [
+    "Atelectasis", "Cardiomegaly", "Effusion", "Infiltration",
+    "Mass", "Nodule", "Pneumonia", "Pneumothorax",
+    "Consolidation", "Edema", "Emphysema", "Fibrosis",
+    "Pleural Thickening", "Hernia"
+]
 
-# Load models once
+# -----------------------------------
+# LOAD MODELS (CACHED)
+# -----------------------------------
 @st.cache_resource
-def load_models():
-    clf = Classifier()
-    clf.load_state_dict(torch.load("best_model.hcl", map_location="cpu"))
-    clf.eval()
+def load_classifier():
+    model = ChestXrayClassifier(
+        num_classes=NUM_CLASSES,
+        backbone=BACKBONE
+    )
+    model.load_state_dict(
+        torch.load("best_model.hcl", map_location=DEVICE)
+    )
+    model.to(DEVICE)
+    model.eval()
+    return model
 
-    det = YOLO("best.pt")
-    return clf, det
 
-classifier, detector = load_models()
+@st.cache_resource
+def load_detector():
+    return YOLO("best.pt")
+
+
+classifier = load_classifier()
+detector = load_detector()
+
+# -----------------------------------
+# IMAGE TRANSFORMS (MATCH TRAINING)
+# -----------------------------------
+transform = transforms.Compose([
+    transforms.Resize((512, 512)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5], [0.5])
+])
+
+# -----------------------------------
+# UI
+# -----------------------------------
+st.title(" Chest X-ray Disease Detection & Classification")
 
 uploaded_file = st.file_uploader(
-    "Upload Image",
-    type=["jpg", "jpeg", "png"]
+    "Upload a Chest X-ray image",
+    type=["png", "jpg", "jpeg"]
+)
+
+threshold = st.slider(
+    "Classification Threshold",
+    min_value=0.1,
+    max_value=0.9,
+    value=0.5,
+    step=0.05
 )
 
 if uploaded_file:
     image = Image.open(uploaded_file).convert("RGB")
-    img = np.array(image)
+    st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    st.image(image, use_container_width=True)
+    # -----------------------------------
+    # CLASSIFICATION
+    # -----------------------------------
+    st.subheader(" Classification Results")
 
-    if task == "Image Classification":
-        x = torch.tensor(img).permute(2, 0, 1).unsqueeze(0).float() / 255
-        with torch.no_grad():
-            pred = classifier(x)
-        st.success(f"Prediction: {pred.argmax().item()}")
+    img_tensor = transform(image).unsqueeze(0).to(DEVICE)
 
+    with torch.no_grad():
+        outputs = classifier(img_tensor)
+        probs = torch.sigmoid(outputs).cpu().numpy()[0]
+
+    results = []
+    for cls, prob in zip(CLASS_NAMES, probs):
+        if prob >= threshold:
+            results.append((cls, prob))
+
+    if results:
+        for cls, prob in results:
+            st.success(f"{cls}: {prob:.2f}")
     else:
-        with st.spinner("Detecting objects..."):
-            results = detector(img, conf=0.25)
-        st.image(results[0].plot(), use_container_width=True)
+        st.info("No disease detected above threshold")
+
+    # -----------------------------------
+    # DETECTION
+    # -----------------------------------
+    st.subheader(" Detection Results")
+
+    yolo_results = detector(image)
+
+    annotated_img = yolo_results[0].plot()
+    st.image(annotated_img, caption="Detected Regions", use_column_width=True)
