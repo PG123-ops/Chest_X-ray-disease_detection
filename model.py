@@ -6,7 +6,7 @@ class ChestXrayClassifier(nn.Module):
         super().__init__()
 
         if backbone == "efficientnet":
-            self.model = efficientnet_b0(weights=None)
+            self.model = efficientnet_b0(weights="DEFAULT")
             num_features = self.model.classifier[1].in_features
             self.model.classifier[1] = nn.Linear(num_features, num_classes)
 
@@ -20,3 +20,4 @@ class ChestXrayClassifier(nn.Module):
 
     def forward(self, x):
         return self.model(x)
+
